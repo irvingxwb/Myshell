@@ -1,0 +1,214 @@
+From a437794437fe7e30ae1b7cdc971fda1fe962a6ef Mon Sep 17 00:00:00 2001
+From: irving <irvingx@sfu.ca>
+Date: Thu, 29 Nov 2018 19:42:01 -0800
+Subject: [PATCH] my system call
+
+---
+ Makefile                               |  2 +-
+ arch/x86/entry/syscalls/syscall_64.tbl |  2 +
+ cs300/Makefile                         |  1 +
+ cs300/array_stats.c                    | 45 +++++++++++++++++++
+ cs300/array_stats.h                    | 10 +++++
+ cs300/process_ancestors.c              | 60 ++++++++++++++++++++++++++
+ cs300/process_ancestors.h              | 17 ++++++++
+ 7 files changed, 136 insertions(+), 1 deletion(-)
+ create mode 100644 cs300/Makefile
+ create mode 100644 cs300/array_stats.c
+ create mode 100644 cs300/array_stats.h
+ create mode 100644 cs300/process_ancestors.c
+ create mode 100644 cs300/process_ancestors.h
+
+diff --git a/Makefile b/Makefile
+index aa0267950444..8035c6ee724b 100644
+--- a/Makefile
++++ b/Makefile
+@@ -941,7 +941,7 @@ endif
+ 
+ 
+ ifeq ($(KBUILD_EXTMOD),)
+-core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/
++core-y		+= kernel/ certs/ mm/ fs/ ipc/ security/ crypto/ block/ cs300/
+ 
+ vmlinux-dirs	:= $(patsubst %/,%,$(filter %/, $(init-y) $(init-m) \
+ 		     $(core-y) $(core-m) $(drivers-y) $(drivers-m) \
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 5aef183e2f85..0bf8b375c7cb 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -339,6 +339,8 @@
+ 330	common	pkey_alloc		sys_pkey_alloc
+ 331	common	pkey_free		sys_pkey_free
+ 332	common	statx			sys_statx
++341 common  array_stats_test    sys_array_stats
++342 common  process_ancestor_test   sys_process_ancestors
+ 
+ #
+ # x32-specific system call numbers start at 512 to avoid cache impact
+diff --git a/cs300/Makefile b/cs300/Makefile
+new file mode 100644
+index 000000000000..e7bc82a6ac5d
+--- /dev/null
++++ b/cs300/Makefile
+@@ -0,0 +1 @@
++obj-y := array_stats.o process_ancestors.o
+diff --git a/cs300/array_stats.c b/cs300/array_stats.c
+new file mode 100644
+index 000000000000..d0f980b6ef9f
+--- /dev/null
++++ b/cs300/array_stats.c
+@@ -0,0 +1,45 @@
++#include "array_stats.h"
++#include <linux/kernel.h>
++#include <linux/uaccess.h>
++
++asmlinkage long sys_array_stats(struct array_stats *stats, long data[], long size)
++{
++    long tempdata, i;
++    struct array_stats temp;
++
++    if(size <= 0)
++        return -EINVAL;
++
++    for(i=0;i<size;i++)
++    {
++        if(copy_from_user((long*)&tempdata, data+i, sizeof(long)))
++            return -EFAULT;
++	
++	//printk("input: %ld array index: %ld\n",tempdata, i);
++
++        if(i == 0)
++        {
++            temp.max = tempdata;
++            temp.min = tempdata;
++            temp.sum = tempdata;
++	    //printk("initial : %ld  %ld  %ld \n",temp.max, temp.min, temp.sum);
++        }
++        else
++        {
++            if(temp.max < tempdata)
++                temp.max = tempdata;
++            else if(temp.min > tempdata)
++                temp.min = tempdata;
++            
++            temp.sum += tempdata;
++        }
++    }
++
++	//printk("out put: %ld  %ld  %ld \n",temp.max, temp.min, temp.sum);
++
++    if(copy_to_user(stats, &temp, sizeof(struct array_stats)))
++        return -EFAULT;
++    else
++        return 0;
++
++}
+diff --git a/cs300/array_stats.h b/cs300/array_stats.h
+new file mode 100644
+index 000000000000..2ac82a69c330
+--- /dev/null
++++ b/cs300/array_stats.h
+@@ -0,0 +1,10 @@
++#ifndef _ARRAY_STATS_H_
++#define _ARRAY_STATS_H_
++
++struct array_stats{
++    long min;
++    long max;
++    long sum;
++};
++
++#endif
+\ No newline at end of file
+diff --git a/cs300/process_ancestors.c b/cs300/process_ancestors.c
+new file mode 100644
+index 000000000000..a7722f397bea
+--- /dev/null
++++ b/cs300/process_ancestors.c
+@@ -0,0 +1,60 @@
++#include "process_ancestors.h"
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/uaccess.h>
++#include <linux/string.h>
++#include <linux/cred.h>
++
++asmlinkage long sys_process_ancestors(struct process_info info_array[], long size, long *num_filled)
++{
++    struct task_struct* currentptr;
++    struct process_info currentpro;
++    struct list_head *headnode, *tempnode;
++    long filled=0, index=0, count;
++
++    currentptr = current;
++    
++    while(1)
++    {
++        currentpro.pid = currentptr->pid;
++        strcpy(currentpro.name,currentptr->comm);
++        currentpro.state = currentptr->state;
++        currentpro.uid = currentptr->cred->uid.val;
++        currentpro.nvcsw = currentptr->nvcsw;
++        currentpro.nivcsw = currentptr->nivcsw;
++
++        headnode = tempnode = &(currentptr->children);
++        tempnode = tempnode->next;
++        count = 1;
++        while(headnode != tempnode)
++        {
++            tempnode = tempnode->next;
++            count++;
++        }
++        currentpro.num_children = count;
++
++        headnode = tempnode = &(currentptr->sibling);
++        tempnode = tempnode->next;
++        count = 1;
++        while(headnode != tempnode)
++        {
++            tempnode = tempnode->next;
++            count++;
++        }
++        currentpro.num_siblings = count;
++
++        if(copy_to_user(info_array+index, &currentpro, sizeof(struct process_info)))
++            return -EFAULT;
++
++        currentptr = currentptr->parent;
++        filled++;
++        index++;
++        if(currentptr->parent == currentptr)    /*judge end cndition */
++            break;
++    }
++
++    if(copy_to_user(num_filled, &filled, sizeof(long)))
++        return -EFAULT;
++    
++    return 0;
++}
+diff --git a/cs300/process_ancestors.h b/cs300/process_ancestors.h
+new file mode 100644
+index 000000000000..b82ee051fdb5
+--- /dev/null
++++ b/cs300/process_ancestors.h
+@@ -0,0 +1,17 @@
++// Structure to hold values returned by process_ancestors sys-call
++#ifndef _PROCESS_ANCESTORS_H
++#define _PROCESS_ANCESTORS_H
++
++#define ANCESTOR_NAME_LEN 16
++struct process_info {
++    long pid;                     /* Process ID */
++    char name[ANCESTOR_NAME_LEN]; /* Program name of process */
++    long state;                   /* Current process state */
++    long uid;                     /* User ID of process owner */
++    long nvcsw;                   /* # voluntary context switches */
++    long nivcsw;                  /* # involuntary context switches */
++    long num_children;            /* # children process has */
++    long num_siblings;            /* # sibling process has */
++};
++
++#endif
+\ No newline at end of file
+-- 
+2.17.1
+
